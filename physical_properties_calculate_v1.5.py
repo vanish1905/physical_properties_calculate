@@ -1,7 +1,7 @@
 """
-version: 1.3
+version: 1.5
 time: 2025/03/02
-Tips：
+Tips:
 1, All code formatting has been adjusted
 2, Adjusted visualisation subgraphs
 3, Optional density calculation method set in the main function
