@@ -181,8 +181,8 @@ class PhysicalProperties:
                 
         elif self.density_method == 'SRK':
             for i in range(self.component):
-                self.taoi1[i] = 1 + np.sqrt(2)
-                self.taoi2[i] = 1 - np.sqrt(2)
+                self.taoi1[i] = 1
+                self.taoi2[i] = 0
                 self.aS[i] = 0.48508 + 1.55171 * omega[i] - 0.15613 * omega[i] ** 2
                 self.aii[i] = 0.42747 * (8.3145 ** 2 * Tcc[i] ** 2) / Pcc[i]
                 self.bii[i] = 0.08664 * ((8.3145 * Tcc[i]) / Pcc[i])
