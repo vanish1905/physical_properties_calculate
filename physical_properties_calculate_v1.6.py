@@ -992,7 +992,7 @@ class PhysicalProperties:
 
         return Han
 
-    def physical_property(self, N, component, Xi, export_to_excel=False, export_path=None):
+    def physical_property(self, P, N, component, Xi, export_to_excel=False, export_path=None):
         """
         计算物理属性并绘制图表
         :param N: 等分数
@@ -1002,7 +1002,7 @@ class PhysicalProperties:
         :param export_path: Excel 文件的保存路径，默认为当前路径
         """
 
-        P = 3e6
+        P = P
         T_ = np.zeros(N)
         rou_ = np.zeros(N)
         eta_ = np.zeros(N)
@@ -1101,5 +1101,5 @@ if __name__ == '__main__':
     rouh0 = rou0 * Han0
     rouY10 = rou0 * 1
 
-    properties.physical_property(N, component, Xi0, export_to_excel=False, export_path='RK_PR.xlsx')
+    properties.physical_property(Pout, N, component, Xi0, export_to_excel=False, export_path='RK_PR.xlsx')
     # print(properties.density_method)
