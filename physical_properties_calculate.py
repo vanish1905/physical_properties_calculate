@@ -11,11 +11,13 @@ Tips:
 7, Fixed thermal capacity error
 8, Fixed enthalpy error
 9, Add content related to PR and SRK function coefficients
+10, Add some equations about BWR function, but some coefficents in BWR_eos still need to concern
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
+from scipy.optimize import brentq
 import math
 
 
@@ -89,6 +91,7 @@ class PhysicalProperties:
 
         # 初始化临界参数和状态方程系数
         self.critical_para_component()
+        self.bwr_parameters = self.bwr_parameter()
         # self.pre_eoscom()
 
     def critical_para_component(self):
@@ -117,6 +120,48 @@ class PhysicalProperties:
                               -21.30, -146.76, -41.95, -166.92, -62.76, -187.80, -83.59, -208.75,
                               -104.00, -228.86, 0]) * 1e3
 
+    def bwr_parameter(self):
+        # (a, A0, b, B0, c, C0, alpha, gamma)
+        bwr_parameters = np.array([
+            # 正癸烷 (C10H22, 142.29 g/mol)
+            [125.122, -0.035818, 1.96701, -6.23189, 4429.54, 131900, 0.00214459, 0.0],
+            # 甲烷 (CH4, 16.04 g/mol)
+            [0.0494, 1.855, 0.00338, 0.0426, 2545, 22257, 1.24359e-4, 0.006],
+            # 氨 (NH3, 17.03 g/mol)
+            [0.10354029, 3.7892819, 0.000719585, 0.051646121, 157.5329, 178570.89, 4.65417e-5, 0.019805156],
+            # 正丁烷 (C4H10, 58.12 g/mol)
+            [1.88231, 10.0847, 0.0399983, 0.124361, 316400, 992830, 0.00110132, 0.031],
+            # 正庚烷 (C7H16, 100.21 g/mol)
+            [10.36475, 17.5206, 0.151954, 0.199, 2470000, 4745740, 0.00435611, 0.09],
+        ])
+        return bwr_parameters
+
+    def mix_parameters(self, Xi, substance_parameters):
+        """
+        Source: 《流体热物性学》 P69
+        混合多物质参数
+        :param Xi: 各物质的摩尔分数
+        :param substance_parameters: 各物质的 BWR 参数矩阵
+        :return: 混合后的 BWR 参数
+        """
+        mixed = np.zeros(substance_parameters.shape[1])
+        for param_idx in range(substance_parameters.shape[1]):
+            if param_idx in [0, 2, 4, 6]:  # 三次根混合: a, b, c, alpha
+                sum_term = sum(
+                    Xi[i] * np.sign(p) * np.abs(p) ** (1 / 3)
+                    for i, p in enumerate(substance_parameters[:, param_idx])
+                )
+                mixed[param_idx] = sum_term ** 3
+            elif param_idx in [1, 5, 7]:  # 平方根混合: A0, C0, gamma
+                sum_term = sum(
+                    Xi[i] * np.sign(p) * np.abs(p) ** (1 / 2)
+                    for i, p in enumerate(substance_parameters[:, param_idx])
+                )
+                mixed[param_idx] = sum_term ** 2
+            elif param_idx == 3:  # 线性混合
+                mixed[param_idx] = np.dot(Xi, substance_parameters[:, param_idx])
+        return mixed
+    
     def cp_parameter(self):
         """
         返回热容参数矩阵
@@ -186,7 +231,27 @@ class PhysicalProperties:
                 self.aS[i] = 0.48508 + 1.55171 * omega[i] - 0.15613 * omega[i] ** 2
                 self.aii[i] = 0.42747 * (8.3145 ** 2 * Tcc[i] ** 2) / Pcc[i]
                 self.bii[i] = 0.08664 * ((8.3145 * Tcc[i]) / Pcc[i])
-                            
+    
+        # 关于BWR的气体状态方程系数相关还需要查询相关论文
+        elif self.density_method == 'BWR':
+            for i in range(self.component):
+                if Zcc[i] > 0.29:
+                    paraa = np.sqrt(2.0) - 1.0
+                else:
+                    paraa = self.taod[0] + self.taod[1] * (self.taod[2] - 1.168 * Zcc[i]) ** self.taod[3] + \
+                            self.taod[4] * (self.taod[2] - 1.168 * Zcc[i]) ** self.taod[5]
+
+                self.taoi1[i] = paraa
+                self.taoi2[i] = (1.0 - paraa) / (1.0 + paraa)
+                ad = (1.0 + paraa ** 2.0) / (1.0 + paraa)
+                ay = 1.0 + (2.0 * (1.0 + paraa)) ** (1.0 / 3.0) + (4.0 / (1.0 + paraa)) ** (1.0 / 3.0)
+                self.alphaki[i] = (1.168 * Zcc[i] * self.kA1 + self.kA0) * omega[i] ** 2.0 + \
+                                (1.168 * Zcc[i] * self.kB1 + self.kB0) * omega[i] + \
+                                (1.168 * Zcc[i] * self.kC1 + self.kC0)
+                self.aii[i] = ((3.0 * ay * ay + 3.0 * ay * ad + ad * ad + ad - 1.0) / (3.0 * ay + ad - 1.0) ** 2.0) * \
+                            (8.3145 ** 2 * Tcc[i] ** 2) / Pcc[i]
+                self.bii[i] = 1.0 / (3.0 * ay + ad - 1.0) * (8.3145 * Tcc[i] / Pcc[i])
+            return True           
         else:
             raise ValueError(f"Unknown density method: {self.density_method}")
 
@@ -577,6 +642,70 @@ class PhysicalProperties:
 
         return rou
 
+    def bwr_pressure(self, rho, T, R=8.314, **params):
+        """
+        Source: 《流体热物性学》 P38
+        BWR 方程计算压力
+        :param rho: 密度 (mol/L)
+        :param T: 温度 (K)
+        :param R: 气体常数 (J/(mol·K))
+        :param params: BWR 方程参数
+        :return: 压力 (atm)
+        """
+        term1 = (rho * R * T) / 101.325
+        term2 = (params['B0'] * R * T / 101.325 - params['A0'] - params['C0'] / T ** 2) * rho ** 2
+        term3 = (params['b'] * R * T / 101.325 - params['a']) * rho ** 3
+        term4 = params['a'] * params['alpha'] * rho ** 6
+        exp_term = (params['c'] * rho ** 3 / T ** 2) * (1 + params['gamma'] * rho ** 2) * np.exp(-params['gamma'] * rho ** 2)
+        return term1 + term2 + term3 + term4 + exp_term
+
+
+    def solve_bwr_density(self, P_target, T, **params):
+        """
+        求解 BWR 密度
+        :param P_target: 目标压力 (Pa)
+        :param T: 温度 (K)
+        :param params: BWR 方程参数
+        :return: 密度 (mol/L)
+        """
+        def f(rho):
+            return self.bwr_pressure(rho, T, **params) - P_target / 101325
+
+        rho_initial = 0.001 * P_target / (8.314 * T)  # 理想气体初始猜测
+        return brentq(f, 1e-3 * rho_initial, 3000, maxiter=100)
+
+
+    def density_BWR(self, T, P_target, Xi):
+        """
+        主计算函数
+        :param P_target: 目标压力 (Pa)
+        :param T_range: 温度范围 (K)
+        :param Xi: 各物质的摩尔分数
+        :param export_path: 数据保存路径
+        :return: 温度数组和密度数组
+        """
+        # 参数混合
+        bwr_parameters = self.bwr_parameters
+        mixed = self.mix_parameters(Xi, bwr_parameters)
+        params = {
+            'a': mixed[0], 'A0': mixed[1], 'b': mixed[2],
+            'B0': mixed[3], 'c': mixed[4], 'C0': mixed[5],
+            'alpha': mixed[6], 'gamma': mixed[7]
+        }
+        Mi = np.array([142.29, 16.04, 17.03, 58.12, 100.21])  # g/mol
+        
+        # 计算混合摩尔质量
+        M_mix = np.dot(Xi, Mi)
+
+        # 密度计算
+        densities_molL = []
+        densities_molL.append(self.solve_bwr_density(P_target, T, **params))  # Unit: mol/L
+
+        # 单位转换: mol/L → kg/m³
+        densities_kgm3 = [d * M_mix for d in densities_molL]
+
+        return densities_kgm3[0]
+
     def density(self, T, P, component, Xi):
         """
         根据 density_method 选择密度计算方法
@@ -587,12 +716,14 @@ class PhysicalProperties:
         :return: 密度 (kg/m^3)
         """
         self.pre_eoscom()
-        if self.density_method == 'RK_PR':
+        if self.density_method == 'RK_PR':       
             return self.density_RK_PR(T, P, component, Xi)
         elif self.density_method == 'PR':
             return self.density_PR(T, P, component, Xi)
         elif self.density_method == 'SRK':
             return self.density_SRK(T, P, component, Xi)
+        elif self.density_method == 'BWR':
+            return self.density_BWR(T, P, Xi=[1.0, 0, 0, 0, 0])
         else:
             raise ValueError(f"Unknown density method: {self.density_method}")
 
@@ -1084,6 +1215,7 @@ if __name__ == '__main__':
     L = 0.375
     d = 5e-4
     Pout = 3.45e6
+    # Pout = 0.1e6
     Tin = 473
     Uin = 0.0424
     Tw = 873
@@ -1092,7 +1224,7 @@ if __name__ == '__main__':
     Yiθ = np.array([1] + [0] * (component - 1))
 
     # 选择密度计算方法
-    density_method = 'RK_PR'  # 可选 'RK_PR' 或 'PR' 或 'SRK'
+    density_method = 'RK_PR'  # choose 'RK_PR' or 'PR' or 'SRK' or "BWR" (at low pressure situation like 0.1e6 Pa)
 
     properties = PhysicalProperties(Tin, Pout, component)
     rou0 = properties.density(Tin, Pout, component, Xi0)
