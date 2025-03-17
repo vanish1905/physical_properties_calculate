@@ -1,6 +1,6 @@
 """
-version: 1.7
-time: 2025/03/16
+version: 1.7.2
+time: 2025/03/17
 Tips:
 1, All code formatting has been adjusted
 2, Adjusted visualisation subgraphs
@@ -22,12 +22,13 @@ import math
 
 
 class PhysicalProperties:
-    def __init__(self, Tin, Pout, component):
+    def __init__(self, Tin, Pout, component, density_method):
         """
         初始化物理属性类
         :param Tin: 输入温度 (K)
         :param Pout: 输出压力 (Pa)
         :param component: 组分数
+        :param density_method: 计算方法
         """
         self.Tin = Tin
         self.Pout = Pout
@@ -75,6 +76,9 @@ class PhysicalProperties:
         self.taomp2 = 0
         self.uu = 0
         self.ww = 0
+        
+        # BWR混合相关参数
+        self.mix = np.zeros(8)
 
         # 温度相关参数
         self.Tri = np.zeros(component)
@@ -158,10 +162,10 @@ class PhysicalProperties:
                     for i, p in enumerate(substance_parameters[:, param_idx])
                 )
                 mixed[param_idx] = sum_term ** 2
-            elif param_idx == 3:  # 线性混合
-                mixed[param_idx] = np.dot(Xi, substance_parameters[:, param_idx])
-        return mixed
-    
+            elif param_idx == 3:  # 线性混合: B0
+                mixed[param_idx] = np.dot(Xi[:substance_parameters.shape[0]], substance_parameters[:, param_idx])
+        return mixed 
+       
     def cp_parameter(self):
         """
         返回热容参数矩阵
@@ -233,7 +237,7 @@ class PhysicalProperties:
                 self.bii[i] = 0.08664 * ((8.3145 * Tcc[i]) / Pcc[i])
     
         # 关于BWR的气体状态方程系数相关还需要查询相关论文
-        elif self.density_method == 'BWR':
+        elif self.density_method == 'BWR': 
             for i in range(self.component):
                 if Zcc[i] > 0.29:
                     paraa = np.sqrt(2.0) - 1.0
@@ -250,8 +254,7 @@ class PhysicalProperties:
                                 (1.168 * Zcc[i] * self.kC1 + self.kC0)
                 self.aii[i] = ((3.0 * ay * ay + 3.0 * ay * ad + ad * ad + ad - 1.0) / (3.0 * ay + ad - 1.0) ** 2.0) * \
                             (8.3145 ** 2 * Tcc[i] ** 2) / Pcc[i]
-                self.bii[i] = 1.0 / (3.0 * ay + ad - 1.0) * (8.3145 * Tcc[i] / Pcc[i])
-            return True           
+                self.bii[i] = 1.0 / (3.0 * ay + ad - 1.0) * (8.3145 * Tcc[i] / Pcc[i])          
         else:
             raise ValueError(f"Unknown density method: {self.density_method}")
 
@@ -302,14 +305,24 @@ class PhysicalProperties:
         if self.density_method == 'RK_PR':
             for i in range(component):
                 self.alphahi[i] = (3.0 / (2.0 + T / self.Tci[i])) ** self.alphaki[i]
+        
+        elif self.density_method == "BWR":   
+            for i in range(component):
+                self.alphahi[i] = (3.0 / (2.0 + T / self.Tci[i])) ** self.alphaki[i]
+            bwr_parameters = self.bwr_parameters
+            self.mix = self.mix_parameters(Xi, bwr_parameters) 
                 
-        elif self.density_method == 'PR' or "SRK":
+        elif self.density_method == 'PR':
             for i in range(component):
                 self.alphahi[i] = (1.0 + aS[i] * (1.0 - np.sqrt(T / self.Tci[i]))) ** 2
-                
+        
+        elif self.density_method == "SRK":
+            for i in range(component):
+                self.alphahi[i] = (1.0 + aS[i] * (1.0 - np.sqrt(T / self.Tci[i]))) ** 2
+            
         else:
             raise ValueError(f"Unknown density method: {self.density_method}")
-
+  
         for i in range(component):
             for j in range(component):
                 self.aij[i, j] = np.sqrt(ai[i] * ai[j] * self.alphahi[i] * self.alphahi[j])
@@ -675,7 +688,7 @@ class PhysicalProperties:
         return brentq(f, 1e-3 * rho_initial, 3000, maxiter=100)
 
 
-    def density_BWR(self, T, P_target, Xi):
+    def density_BWR(self, T, P_target, component, Xi):
         """
         主计算函数
         :param P_target: 目标压力 (Pa)
@@ -686,25 +699,24 @@ class PhysicalProperties:
         """
         # 参数混合
         bwr_parameters = self.bwr_parameters
-        mixed = self.mix_parameters(Xi, bwr_parameters)
+        self.eos_mix(T, component, Xi)
+        mixed = self.mix
         params = {
             'a': mixed[0], 'A0': mixed[1], 'b': mixed[2],
             'B0': mixed[3], 'c': mixed[4], 'C0': mixed[5],
             'alpha': mixed[6], 'gamma': mixed[7]
         }
-        Mi = np.array([142.29, 16.04, 17.03, 58.12, 100.21])  # g/mol
-        
+        Mi = np.array([142.29, 16.04, 17.03, 58.12, 100.21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])  # g/mol
         # 计算混合摩尔质量
         M_mix = np.dot(Xi, Mi)
 
         # 密度计算
-        densities_molL = []
-        densities_molL.append(self.solve_bwr_density(P_target, T, **params))  # Unit: mol/L
+        densities_molL = self.solve_bwr_density(P_target, T, **params)  # Unit: mol/L
 
         # 单位转换: mol/L → kg/m³
-        densities_kgm3 = [d * M_mix for d in densities_molL]
+        densities_kgm3 = densities_molL* M_mix
 
-        return densities_kgm3[0]
+        return densities_kgm3
 
     def density(self, T, P, component, Xi):
         """
@@ -723,7 +735,7 @@ class PhysicalProperties:
         elif self.density_method == 'SRK':
             return self.density_SRK(T, P, component, Xi)
         elif self.density_method == 'BWR':
-            return self.density_BWR(T, P, Xi=[1.0, 0, 0, 0, 0])
+            return self.density_BWR(T, P, component, Xi)
         else:
             raise ValueError(f"Unknown density method: {self.density_method}")
 
@@ -1214,8 +1226,8 @@ if __name__ == '__main__':
     component = 19
     L = 0.375
     d = 5e-4
-    Pout = 3.45e6
-    # Pout = 0.1e6
+    # Pout = 3.45e6
+    Pout = 0.1e6
     Tin = 473
     Uin = 0.0424
     Tw = 873
@@ -1224,9 +1236,9 @@ if __name__ == '__main__':
     Yiθ = np.array([1] + [0] * (component - 1))
 
     # 选择密度计算方法
-    density_method = 'RK_PR'  # choose 'RK_PR' or 'PR' or 'SRK' or "BWR" (at low pressure situation like 0.1e6 Pa)
+    density_method = 'BWR'  # choose 'RK_PR' or 'PR' or 'SRK' or "BWR" (at low pressure situation like 0.1e6 Pa)
 
-    properties = PhysicalProperties(Tin, Pout, component)
+    properties = PhysicalProperties(Tin, Pout, component, density_method)
     rou0 = properties.density(Tin, Pout, component, Xi0)
     rouu0 = Uin * rou0
     Han0 = properties.enthalpy(Tin, Pout, rou0, component, Xi0, Yiθ, Yiθ)
@@ -1234,4 +1246,3 @@ if __name__ == '__main__':
     rouY10 = rou0 * 1
 
     properties.physical_property(Pout, N, component, Xi0, export_to_excel=False, export_path='RK_PR.xlsx')
-    # print(properties.density_method)
